@@ -13,24 +13,23 @@ Gives AI agents an exact **sonic mental model** of how the narrator voice, FFmpe
 
 ---
 
-## 1. Narrator Voice Profile (`Puck` + `unifyVocalTone`)
+## 1. Narrator Voice Profile (`Puck`) & Character / Impersonation Exception System
 
 ### 1.1 Exact Vocal Chain & Sonic Character
-- **Voice & Model Priority:** Gemini Interactions TTS (`voice: "Puck"`):
-  1. `gemini-3.8-flash-tts` (uses `annotations: [{ type: 'speech_metadata', style: UNIFIED_STYLE }]`)
+- **Voice & Model Priority:** Gemini Interactions TTS (Narrator locked to `voice: "Puck"`), executed in **parallel workers across `GEMINI_API_KEYS`** (bounded up to 3 concurrent keys with `dailyExhausted` per-model/key tracking and single `lockedModelId` across the entire episode):
+  1. `gemini-3.8-flash-tts` (uses `annotations: [{ type: 'speech_metadata', style: NARRATOR_STYLE }]`)
   2. `gemini-3.8-flash-lite-tts` (uses `speech_metadata`)
-  3. `gemini-3.1-flash-tts-preview` (**must omit** `annotations` / `speech_metadata`)
-- **Base Style Directive (`UNIFIED_STYLE`):**
-  > `"calm, composed, deadpan male survival-horror documentary narrator in Thai, steady pace, low and even pitch, quiet suspense"`
-- **Post-Processing Signature (`unifyVocalTone`):**
-  - **Speed:** `atempo=1.12` (**+12% faster** than raw TTS delivery — crisp, urgent analytical cadence without sounding rushed).
-  - **EQ & Dynamics:** `highpass=f=80`, `lowpass=f=12000`, **`+1.2 dB @ 180 Hz`** (warm chest resonance), **`-1.0 dB @ 3500 Hz`** (softens Thai sibilants `ซ/ส/ช`), `acompressor` (`-18 dB`, `2.5:1`), normalized to **`-18.0 LUFS`** (`TP=-1.5`).
+  3. `gemini-3.1-flash-tts-preview` (**must omit** `annotations` / `speech_metadata`, uses `response_format: { type: 'audio' }`)
+- **Base Narrator Style Directive (`UNIFIED_STYLE` / `NARRATOR_STYLE`):**
+  > `"same single male Thai narrator (Puck) across all scenes, locked low-mid baritone pitch register, calm deadpan documentary tone, steady even cadence, consistent close-mic proximity, zero pitch spikes or theatrical shouting"`
+- **Post-Processing Signature (`unifyVocalTone` — Two-Pass Linear EBU R128 + `dynaudnorm`):**
+  - **Speed & EQ (Narrator Lock):** `atempo=1.12` (**+12% faster**), `highpass=f=82`, `lowpass=f=11800`, **`+1.4 dB @ 175 Hz`** (chest warmth lock), **`-1.0 dB @ 420 Hz`** (mud control), **`-1.4 dB @ 3350 Hz`** (softens Thai sibilants `ซ/ส/ช`), `dynaudnorm=f=120:g=5:p=0.92:m=3.0`, `acompressor` (`-21 dB`, `3.8:1`, `makeup=2.5`), followed by **Two-Pass `loudnorm`** (`linear=true` measured pass -> target **`-18.0 LUFS`**, **`LRA=3.5`**, `TP=-1.5` for Horror; **`-16.0 LUFS`**, **`LRA=3.5`** for Thai Sitcom).
 - **How This Voice "Feels" to Listeners:**
   - Detached, forensic, coldly rational male documentary host—never melodramatic, screaming, or cartoonishly spooky.
   - Tension comes from **short declarative sentences, concrete numbers, and sudden quiet pauses**, not exclamation marks.
 
 ### 1.2 Writing `scene.vo` for `Puck` + `chunkSubs()`
-Because `scene.vo` feeds **both** Gemini TTS synthesis and `chunkSubs()` (`Intl.Segmenter('th')`, `maxLen = 34`, short-tail merge ceiling `<= 36` chars/cue):
+Because `scene.vo` feeds **both** Gemini TTS synthesis and `chunkSubs()` (`Intl.Segmenter('th')`, `maxLen = 24`, short-tail merge ceiling `<= 26` chars/cue for fast 1.2–1.8s vertical reading cadence):
 1. **Write for Deadpan Analytical Delivery:**
    - ✅ Prefer crisp, clinical statements: `"อุณหภูมิลดลงสามองศา ภายในสิบวินาที"` / `"นี่ไม่ใช่เสียงเครื่องปรับอากาศ"`
    - ❌ Avoid theatrical filler (`"กรี๊ดดด!"`, `"โอ้โห น่ากลัวสุดๆ ไปเลยครับ!"`, excessive `!!!` or `???` chains).
@@ -38,10 +37,47 @@ Because `scene.vo` feeds **both** Gemini TTS synthesis and `chunkSubs()` (`Intl.
    - Spell out ambiguous symbols/codes when clarity matters, or keep short tokens cleanly spaced (e.g., `"ซีสิบสาม"` or `"ห้อง C-13"` rather than dense symbol clusters like `~180°C/min@2.5x`).
    - Use **spaces** or **`…`** intentionally for short breath beats (`chunkSubs` converts `...` to `… ` and strips `‘’'`).
    - Avoid mixing long unspaced English phrases mid-Thai sentence; keep English terms short and isolated when needed.
-3. **Timing & `<= 60s` Shorts Budgeting:**
-   - Every voiced scene adds `LEAD = 0.35s` before speech starts + trimmed `voDur` + `pad` (default `0.5s`, typical `0.6s`).
+3. **Zero-Delay Cold Open, Standalone `45–60s` Budgeting & Part 2 3s Recap:**
+   - **Zero-Delay Cold Open & Part 2 Recap (`0.06s`):** `SCENES[0]`, `isClimax: true`, `act` openers, and **`isRecap: true`** scenes (Part 2 3s recap) automatically use `COLD_OPEN_LEAD = 0.06s` and display the **first subtitle cue at `t0 = 0.000s`** (pre-roll visual hook for muted feed scrollers).
+   - **Standard Cut Timing:** Standard scenes use tight J-cut pacing (`LEAD = 0.20s` Horror / `0.18s` Sitcom, `DEFAULT_PAD = 0.28s` Horror / `0.25s` Sitcom) — override with explicit `s.lead` or `s.pad` only for intentional suspense/comedic silence.
    - Silent tension beats (`vo: ""`) last exactly `s.pad` seconds (skip `LEAD`).
-   - Because `atempo=1.12` compresses raw narration, keep `episode.js` scenes tight (~12–28 Thai words per standard beat) so Acts stay comfortably under the `58s` `shorts_planner.js` ceiling.
+   - Because `atempo=1.12` compresses raw narration, **keep standalone Shorts stories tight (~6–9 concise scenes, total `45–58s`)** so the hook, context, and payoff resolution conclude cleanly in **1 clip**. If genuinely longer (**max 2 EPs total**), reserve the **first 3 seconds (~8–12 Thai words)** of `act: 2` (`isRecap: true`) for a snappy `"ความเดิมจากตอนที่แล้ว..."` summary before jumping to the resolution.
+   - **High-Retention Shorts Ending (`<= 5s` — NEVER Say `"ฝากกดไลก์ กดแชร์ กดติดตาม"`):** Close Shorts with a **(1) Side-Choosing Open Question** (`2–3s` debate prompt tied to the story), **(2) 1-Sentence Cliffhanger or Full-Video Bridge** (`"ฟังเรื่องเต็มแบบไม่ตัด ได้ที่คลิปยาวหน้าช่อง"`), and leave pure channel CTA to the silent **`drawShortsEndingCTA`** graphic in the final `2.25s` so listeners never detect a generic sign-off and swipe away early.
+
+### 1.3 Strict Narrator Vocal Tone Lock (`Puck` + `sanitizeVoForTTS` + Two-Pass `LRA=3.5`)
+To ensure the main narrator **never** shifts pitch, timbre, or emotional register across scenes:
+1. **Narrator Locked Across All Narration Scenes:** Never override `voice` or `speech_metadata` on narrator lines (`role: 'narrator'`, or default scenes without `speaker`/`impersonate`). Every narrator segment uses `VOICE_NAME = 'Puck'` and the exact same `UNIFIED_STYLE` (`NARRATOR_STYLE`) string.
+2. **Strip Pitch-Spiking Punctuation on Narrator Lines (`sanitizeVoForTTS(text, 'narrator')`):** Gemini TTS raises pitch or shouts when given `?!`, `!!`, `!`, `—`, or `...`. For `narrator` lines, `generate_audio.js` strips `[!?؟…~—–:;]+` before calling Gemini TTS (keeping calm breath spaces), while `stripVoMarkupForSubs()` + `chunkSubs()` preserves original punctuation cleanly in subtitles.
+3. **Single-Model Episode Lock (`lockedModelId`):** The first uncached scene locks `lockedModelId` (prioritizing `gemini-3.8-flash-tts`, defaulting to `TTS_MODELS[0].id` before workers start) across all API keys and retries so an episode never mixes two TTS models mid-video.
+4. **Two-Pass EBU R128 + `dynaudnorm` (`LRA=3.5`):** Every narrator WAV runs through fixed chest/sibilance EQ, dynamic range tightening, `3.8:1` compression, and **Two-Pass linear `loudnorm`** (`VOICE_NAME` + `UNIFIED_STYLE` hashed into SHA-256 cache key).
+
+### 1.4 Explicit Exceptions: Other Characters (`role: 'character'`) & Narrator Impersonations (`role: 'impersonate'`)
+Voice tone and speaker changes are **strictly allowed ONLY** when explicitly representing another character or the narrator impersonating someone else—never on ordinary narrator prose:
+1. **Other Characters (`role: 'character'` or `speaker: '<id>'`):**
+   - Built-in `DEFAULT_CHARACTER_VOICES` (extensible via `episode.CHARACTER_VOICES`):
+     - `yai_nuan` / `elder_female` / `grandma` / `auntie` $\rightarrow$ `Aoede` (`elder_female`)
+     - `fah` / `female` / `woman` / `mother` / `nurse` $\rightarrow$ `Kore` (`female`) / `Aoede`
+     - `clinic_staff` / `sales_girl` / `cashier` $\rightarrow$ `Kore` (`sweet_sales`)
+     - `boss` / `elder_male` / `guard` / `shaman` / `monk` / `deep_male` $\rightarrow$ `Charon` (`deep_male`)
+     - `barista` / `rider` / `friend_male` / `vendor_male` / `young_male` $\rightarrow$ `Fenrir` (`young_male`)
+     - `ghost` / `entity` / `whisper` $\rightarrow$ `Aoede` (`whisper_ghost`)
+   - Unknown `speaker` names deterministically hash into `['Kore', 'Charon', 'Aoede', 'Fenrir']` so each character keeps an identical voice across every scene they speak.
+2. **Narrator Doing a Voice Impression (`role: 'impersonate'` or `impersonate: '<desc>'`):**
+   - Keeps the narrator's base voice (`'Puck'` by default) while switching `speech_metadata` to vocal acting (`impersonate`), preserving `?`, `!`, `…`, and applying optional acoustic `voicePreset` (`'sweet_sales'`, `'elder'`, `'deep'`, `'excited'`, `'whisper_ghost'`, `'phone_speaker'`) at `LRA=4.5`, before snapping right back to locked deadpan `'Puck'` (`LRA=3.5`) on the next narrator segment.
+3. **Mixing Narrator + Character / Impersonation Inside One Scene (`voSegments`, Inline `[[...]]`, Auto-Quote Split):**
+   - **Structured array (`scene.voSegments`):** `[{ role: 'narrator', text: '...' }, { role: 'character', speaker: 'yai_nuan', text: '...' }, { role: 'impersonate', impersonate: 'เสียงหวานพนักงานคลินิก', preset: 'sweet_sales', text: '...' }]`
+   - **Inline markup in `scene.vo`:** `"พนักงานรีบบอก [[char:clinic_staff|โปรผ่อน 0% นะคะ!]] แล้วต้นก็เดินออกมา"` or `"[[impersonate:เสียงดุเลียนแบบหัวหน้า|พรุ่งนี้ส่งก่อนแปดโมง!]]"` (`stripVoMarkupForSubs()` automatically strips `[[...|...]]` tags from subtitles!).
+   - **Speech-verb quote auto-split:** Phrases like `พูดว่า "..."` / `เล่าว่า "..."` automatically isolate the quoted line as `role: 'impersonate'` (or `quoteSpeaker` / `quoteRole`) while keeping surrounding narrator prose locked deadpan (`autoSplitQuotes: false` disables per scene). Multi-segment scenes normalize each segment separately and concatenate with a crisp `0.10s` pause.
+
+### 1.5 AI Pronunciation & Speech Clarity Detector + Auto-Retry (`normalizeThaiForTTS`, `inspectVoClipClarity`, `--verify-asr`)
+1. **Pre-TTS Thai Phonetic & Number/Symbol Normalizer (`normalizeThaiForTTS`):**
+   - Automatically expands numbers (`2,490` $\rightarrow$ `สองพันสี่ร้อยเก้าสิบ`, decimals `.50` $\rightarrow$ `จุดห้าศูนย์`), Thai time (`03:14 น.` $\rightarrow$ `สามนาฬิกา สิบสี่นาที`), currencies & units (`฿` / `บ.`, `%`, `ชม.`, `กม.`, `ซม.`, `มม.`, `มล.`, `ม.`, `°C`, `dB`), abbreviations (`กทม.`, `รพ.`, `ฯลฯ`), English acronyms (`LINE`, `CCTV`, `GPS`, `AI`, `ATM`, `OTP`, `VIP`, `KPI`, `7-Eleven`), and Mai Yamok spacing (`ๆ `) **only for the TTS input** while keeping raw concise symbols intact in visual subtitles.
+   - Authors can supply episode-wide overrides via `episode.PRONUNCIATION_MAP` or per-scene phonetic spelling via `scene.ttsVo` (leaving `scene.vo` for subtitles).
+2. **Post-TTS Acoustic Clarity, Truncation & Dropout Detector (`inspectVoClipClarity`):**
+   - Audits every generated/cached WAV (`24 kHz` normalized PCM) for speaking-rate anomalies (`CUTOFF_OR_SKIPPED` `> 22.0 ch/s`, `FAST_RUSHED_SPEECH` `> 19.0 ch/s`, `DRAWL_OR_BABBLE` `< 5.2 ch/s`), mid-sentence dropouts (`INTERNAL_DROPOUT_GAP` `> 1.25s`, `LOW_VOICE_ACTIVITY` `vadRatio < 0.48`), swallowed endings (`MUMBLED_TAIL` `tailDropDb > 10.5 dB`), muffled speech/hiss (`MUFFLED_SPEECH` `zcr < 0.022`, `HIGH_FREQ_NOISE` `zcr > 0.30`), and clipping (`> 0.5%`), scoring `0–100` (`PASS >= 82`, `WARN 70–81`, `FAIL < 70`) and writing `audio/pronunciation_report.json`.
+3. **Optional Gemini Multimodal ASR Verification & Auto-Retry:**
+   - Fresh takes failing `inspectVoClipClarity` (or `--verify-asr` Gemini `2.5-flash` round-trip transcription check `< 0.78` similarity / mispronounced word flag) automatically trigger up to 2 self-healing retries with spaced Thai clauses (`buildClearerRetryText`), caching the highest-scoring take.
+   - CLI flags: `node generate_audio.js --audit-only` (free cached/WAV audit without regenerating audio), `--fix-unclear` (re-roll cached `FAIL` scenes), `--repronounce` (re-synthesize digits/abbreviations with `normalizeThaiForTTS`), `--verify-asr` (enable multimodal ASR transcript verification).
 
 ---
 
@@ -102,13 +138,15 @@ Every bed automatically crossfades (`F = 0.4s`) across scene boundaries:
 
 ---
 
-## 4. Mixing Physics & Cue Placement Rules (Critical)
+## 4. Mixing Physics & Dual-Bus Cue Placement Rules (Critical)
 
-`generate_audio.js` applies **35% sidechain ducking** to `sfxMix` whenever `vo` is speaking (`duck = 1 - Math.min(0.35, envF * 0.45)`), followed by soft `tanh` limiting and `-18.0 LUFS` mastering.
+`generate_audio.js` uses **Dual-Bus Sidechain Ducking** followed by soft `tanh` limiting and EBU R128 mastering (`-18.0 LUFS` Horror / `-16.0 LUFS` Sitcom):
+- **`bedMix` (up to `42%` ducking under speech):** All `s.bed` tracks and continuous/looping cues (`steps`, `mop`, `rumble`, `wind_gust`, `water_lap`, `heartbeat` / Sitcom `keyboard`, `slurp`) duck cleanly beneath narration so voice clarity stays sharp.
+- **`impactSfxMix` (`<= 10%` max ducking):** Transient stingers and punchline cues (`ui_pop`, `boom`, `sting`, `blackout`, `flicker`, `thunk`, `door`, `alert`, `ice_crack`, `CUSTOM_SFX`, plus Sitcom `rimshot`, `record_scratch`, `vine_boom`, `cash_register`, `line_ping`, `chat_pop`) stay crisp and loud even when synced directly over a key spoken word!
 
 Follow these 4 placement rules when authoring `episode.js`:
-1. **Lock `ui_pop` / `tick` / `chapter` to Visual Triggers:** Set `sfx` `at` equal to `hud.at` (or `0` for `s.chapter`) so sound and animation hit together.
-2. **Never Bury Heavy Impacts Under Dense Speech:** Place `boom`, `sting`, `blackout`, or `door` in `LEAD` (`at: 0.05–0.25`), during `pad` (near end of scene), or inside a silent beat (`vo: ""`, `pad: 1.5–2.5`) so ducking does not mute the punch.
+1. **Lock `ui_pop` / `tick` / `chapter` / Punchline SFX to Visual Triggers:** Set `sfx` `at` equal to `hud.at` (or `0` for `s.chapter` / `snapAt`) so sound, camera snap-zoom, and animation hit together.
+2. **Place Cold-Open Hooks at `at: 0.00–0.15s`:** Because `impactSfxMix` is barely ducked (`<= 10%`), you can hit a sudden sting/scratch/knock right as `SCENES[0]` speech opens at `0.06s` — reserve silent beats (`vo: ""`, `pad: 1.5–2.2`) for deep cliffhanger pauses or heavy `rumble` tails.
 3. **Avoid Stacking Long Tails:** Do not trigger `rumble` (`4.2s`), `heartbeat` (`3.6s`), and `boom` (`2.4s`) on top of each other within the same short scene; alternate `bed: 'dark'` with targeted single-impact cues.
 4. **Writing `episode.CUSTOM_SFX` / `episode.CUSTOM_BEDS`:** When a story needs a signature sound (e.g., radio static, sonar ping, metallic latch), layer **3 components** instead of a raw single sine wave: `(1) short noise transient + (2) pitch-swept body tone + (3) smooth exponential/sin² envelope`. Both hooks receive `{ SR, add, nz, env, TAU, rnd }` in their 4th argument:
    ```javascript
